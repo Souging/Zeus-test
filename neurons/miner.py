@@ -21,7 +21,6 @@ import time
 import torch
 import typing
 import bittensor as bt
-
 import openmeteo_requests
 
 import numpy as np
@@ -51,10 +50,13 @@ class Miner(BaseMinerNeuron):
             blacklist_fn=self.blacklist,
             priority_fn=self.priority,
         )
-        
+        proxies = {
+            "http": "http://8888:8888@8888.8888.8888.8888:8888",
+            "https": "http://8888:8888@8888.8888.8888.8888:8888", 
+        }
         # TODO(miner): Anything specific to your use case you can do here
         self.device: torch.device = torch.device(get_device_str())
-        self.openmeteo_api = openmeteo_requests.Client()
+        self.openmeteo_api = openmeteo_requests.Client(proxies=proxies)
 
     async def forward(self, synapse: TimePredictionSynapse) -> TimePredictionSynapse:
         """
@@ -84,13 +86,23 @@ class Miner(BaseMinerNeuron):
             "start_hour": start_time.isoformat(timespec="minutes"),
             "end_hour": end_time.isoformat(timespec="minutes"),
         }
-        responses = self.openmeteo_api.weather_api(
-            "https://api.open-meteo.com/v1/forecast", params=params
-        )
+        max_retries=3
+        retries = 0
+        while retries < max_retries:
+            try:
+                responses = self.openmeteo_api.weather_api(
+                    "https://api.open-meteo.com/v1/forecast", params=params
+                )
+                output = np.stack(
+                    [r.Hourly().Variables(0).ValuesAsNumpy() for r in responses], axis=1
+                ).reshape(-1, coordinates.shape[0], coordinates.shape[1])
+                break
+            except Exception as e:
+                print(f"An unexpected error occurred (retry {retries + 1}/{max_retries}): {e}")
+                retries += 1
+                time.sleep(2 ** retries)
         # get temperature output as grid of [time, lat, lon]
-        output = np.stack(
-            [r.Hourly().Variables(0).ValuesAsNumpy() for r in responses], axis=1
-        ).reshape(-1, coordinates.shape[0], coordinates.shape[1])
+        
         # OpenMeteo does Celcius, scoring is based on Kelvin
         output = celcius_to_kelvin(output)
 
